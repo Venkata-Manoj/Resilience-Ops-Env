@@ -2,7 +2,7 @@
 title: ResilienceOps — IT Incident Response RL Environment
 emoji: 🚨
 colorFrom: red
-colorTo: orange
+colorTo: gray
 sdk: docker
 pinned: false
 app_port: 8000
