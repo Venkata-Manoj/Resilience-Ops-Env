@@ -1,0 +1,7 @@
+spec_version: 1
+name: resilience_ops_env
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+base_path: /web
