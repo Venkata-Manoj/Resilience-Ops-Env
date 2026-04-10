@@ -38,7 +38,10 @@ import os
 import sys
 import textwrap
 import asyncio
+import time
 from typing import List, Optional
+
+from openai import APITimeoutError, APIError
 
 # Load env vars FIRST, before any other imports
 from dotenv import load_dotenv
@@ -52,7 +55,10 @@ from resilience_ops_env import ResilienceOpsAction, ResilienceOpsEnv
 from resilience_ops_env.models import TASKS
 
 # Environment configuration
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+if not API_KEY:
+    print("[ERROR] HF_TOKEN or API_KEY environment variable is required", flush=True)
+    sys.exit(1)
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:8000")
@@ -119,32 +125,57 @@ def build_user_prompt(step: int, obs, last_reward: float, history: List[str]) ->
     ).strip()
 
 
-def get_model_message(client: OpenAI, step: int, obs, last_reward: float, history: List[str]) -> str:
+FALLBACK_ACTIONS = {
+    "easy": {"action_type": "diagnose", "target": "api-gateway", "tool_used": "top", "parameters": {}},
+    "medium": {"action_type": "diagnose", "target": "postgres-primary", "tool_used": "pg_isready", "parameters": {}},
+    "hard": {"action_type": "check_connectivity", "target": "global-load-balancer", "tool_used": "traceroute", "parameters": {}},
+}
+
+
+def _call_llm_with_retry(client: OpenAI, messages: list, max_retries: int = 3, base_delay: float = 1.0) -> str:
+    """Call LLM with exponential backoff retry logic."""
+    for attempt in range(max_retries):
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                temperature=TEMPERATURE,
+                max_tokens=MAX_TOKENS,
+                stream=False,
+                timeout=30,
+            )
+            text = (completion.choices[0].message.content or "").strip()
+            # Strip markdown code blocks if present
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+            # Validate JSON
+            json.loads(text)
+            return text if text else ""
+        except (APITimeoutError, APIError) as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                print(f"[WARN] LLM call failed (attempt {attempt + 1}), retrying in {delay}s...", flush=True)
+                time.sleep(delay)
+            else:
+                print(f"[ERROR] LLM call failed after {max_retries} attempts: {e}", flush=True)
+                raise
+    return ""
+
+
+def get_model_message(client: OpenAI, step: int, obs, last_reward: float, history: List[str], task_name: str = "easy") -> str:
     user_prompt = build_user_prompt(step, obs, last_reward, history)
     try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            stream=False,
-        )
-        text = (completion.choices[0].message.content or "").strip()
-        # Strip markdown code blocks if present
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-        # Validate JSON
-        json.loads(text)
-        return text if text else '{"action_type":"diagnose","target":"","tool_used":"","parameters":{}}'
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+        return _call_llm_with_retry(client, messages) or json.dumps(FALLBACK_ACTIONS.get(task_name, FALLBACK_ACTIONS["easy"]))
     except Exception as exc:
         print(f"[DEBUG] Model request failed: {exc}", flush=True)
-        return '{"action_type":"diagnose","target":"","tool_used":"","parameters":{}}'
+        return json.dumps(FALLBACK_ACTIONS.get(task_name, FALLBACK_ACTIONS["easy"]))
 
 
 def action_dict_to_str(action_text: str) -> str:
@@ -178,7 +209,7 @@ async def run_task(client: OpenAI, task_name: str) -> None:
             if result.done:
                 break
             
-            action_text = get_model_message(client, step, result.observation, last_reward, history)
+            action_text = get_model_message(client, step, result.observation, last_reward, history, task_name)
             
             try:
                 action_data = json.loads(action_text)
@@ -216,7 +247,8 @@ async def run_task(client: OpenAI, task_name: str) -> None:
             if done:
                 break
         
-        score = sum(rewards) / MAX_TOTAL_REWARD if MAX_TOTAL_REWARD > 0 else 0.0
+        max_possible = max_steps * _MAX_REWARD_PER_STEP
+        score = sum(rewards) / max_possible if max_possible > 0 else 0.0
         score = min(max(score, 0.0), 1.0)
         success = score >= SUCCESS_SCORE_THRESHOLD
         
@@ -248,7 +280,7 @@ def main() -> None:
     # Debug: print API configuration
     print(f"[DEBUG] API_BASE_URL: {API_BASE_URL}", flush=True)
     print(f"[DEBUG] MODEL_NAME: {MODEL_NAME}", flush=True)
-    print(f"[DEBUG] API_KEY (first 10 chars): {API_KEY[:10]}...", flush=True)
+    print(f"[DEBUG] API_KEY: {'set' if API_KEY else 'NOT SET'}", flush=True)
     print(f"[DEBUG] ENV_BASE_URL: {ENV_BASE_URL}", flush=True)
     asyncio.run(main_async())
 

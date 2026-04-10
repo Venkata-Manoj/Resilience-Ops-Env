@@ -336,6 +336,224 @@ TASKS: Dict[str, TaskConfig] = {
             "shared-postgres": "healthy",
         },
     ),
+    # v3.0 New Tasks
+    "k8s_crashloop": TaskConfig(
+        name="k8s_crashloop",
+        difficulty="medium+",
+        incident_title="Kubernetes Pod CrashLoopBackOff",
+        severity="P2",
+        affected_services=["payment-service", "payment-worker", "redis-cache"],
+        initial_alerts=[
+            "pod_crashloop_backoff",
+            "memory_pressure",
+            "oom_kills_detected",
+        ],
+        initial_log_snippet=(
+            "payment-worker[abc12]: FATAL: OutOfMemoryError: Java heap space\n"
+            "kubelet[node-3]: WARN: Pod payment-worker exceeded memory limit (1Gi/1Gi)\n"
+            "payment-service[def34]: ERROR: Connection refused to payment-worker\n"
+            "prometheus: ALERT: container_memory_working_set_bytes > 95% limit"
+        ),
+        root_cause="payment-worker memory leak causing OOM kills and cascading failures",
+        correct_diagnostic_tools=["kubectl", "prometheus", "docker_stats", "top"],
+        correct_remediation_sequence=[
+            {"action_type": "diagnose", "target": "payment-worker", "tool_used": "kubectl"},
+            {"action_type": "check_metrics", "target": "payment-worker", "tool_used": "prometheus"},
+            {"action_type": "analyze_root_cause", "target": "payment-worker", "tool_used": "docker_stats"},
+            {"action_type": "remediate", "target": "payment-worker", "tool_used": "kubectl", "parameters": {"action": "increase_memory_limit"}},
+            {"action_type": "restart_service", "target": "payment-worker", "tool_used": "kubectl"},
+            {"action_type": "check_metrics", "target": "payment-service", "tool_used": "prometheus"},
+        ],
+        available_tools=[
+            "kubectl", "prometheus", "docker_stats", "top", "journalctl",
+            "netstat", "heap_dump", "curl",
+        ],
+        max_steps=15,
+        hints=[
+            "Look for OOM kills in the pod events.",
+            "Check memory usage trends before the crashes.",
+            "The worker pod may need more memory allocated.",
+        ],
+        initial_service_health={
+            "payment-service": "degraded",
+            "payment-worker": "down",
+            "redis-cache": "healthy",
+        },
+        service_health_after_remediation={
+            "payment-service": "healthy",
+            "payment-worker": "healthy",
+            "redis-cache": "healthy",
+        },
+    ),
+    "security_lateral": TaskConfig(
+        name="security_lateral",
+        difficulty="hard",
+        incident_title="Security Incident: Lateral Movement Detection",
+        severity="P1",
+        affected_services=["auth-service", "api-gateway", "internal-db", "jump-host"],
+        initial_alerts=[
+            "suspicious_ssh_connections",
+            "auth_anomaly_detected",
+            "privilege_escalation_attempt",
+            "unusual_data_access_pattern",
+        ],
+        initial_log_snippet=(
+            "auth-audit[1234]: ALERT: Multiple failed sudo attempts from 10.0.3.45\n"
+            "auth-service[5678]: WARN: Login from unknown IP range (10.0.3.x)\n"
+            "api-gateway[9012]: ERROR: Unusual API key usage pattern detected\n"
+            "jump-host[3456]: CRITICAL: SSH session from auth-service to internal-db\n"
+            "internal-db[7890]: WARN: SELECT * FROM users executed by non-app user"
+        ),
+        root_cause="compromised jump-host being used for lateral movement to internal systems",
+        correct_diagnostic_tools=["audit_log", "netstat", "ss", "last"],
+        correct_remediation_sequence=[
+            {"action_type": "check_connectivity", "target": "jump-host", "tool_used": "netstat"},
+            {"action_type": "query_logs", "target": "auth-service", "tool_used": "audit_log"},
+            {"action_type": "analyze_root_cause", "target": "jump-host", "tool_used": "last"},
+            {"action_type": "remediate", "target": "jump-host", "tool_used": "ss", "parameters": {"action": "isolate_node"}},
+            {"action_type": "query_logs", "target": "internal-db", "tool_used": "audit_log"},
+            {"action_type": "remediate", "target": "auth-service", "tool_used": "kubectl", "parameters": {"action": "revoke_sessions"}},
+            {"action_type": "check_metrics", "target": "api-gateway", "tool_used": "prometheus"},
+        ],
+        available_tools=[
+            "audit_log", "netstat", "ss", "last", "kubectl", "prometheus",
+            "journalctl", "lsof", "tcpdump", "iptables",
+        ],
+        max_steps=18,
+        hints=[
+            "SSH connections between internal services are suspicious.",
+            "Check audit logs for privilege escalation attempts.",
+            "Isolate compromised nodes before investigating further.",
+            "Verify legitimate traffic is not disrupted.",
+        ],
+        initial_service_health={
+            "auth-service": "degraded",
+            "api-gateway": "degraded",
+            "internal-db": "degraded",
+            "jump-host": "down",
+        },
+        service_health_after_remediation={
+            "auth-service": "healthy",
+            "api-gateway": "healthy",
+            "internal-db": "healthy",
+            "jump-host": "healthy",
+        },
+    ),
+    "dns_failure": TaskConfig(
+        name="dns_failure",
+        difficulty="easy+",
+        incident_title="DNS Resolution Failure Chain",
+        severity="P3",
+        affected_services=["frontend-app", "api-gateway", "dns-resolver-us", "dns-resolver-eu"],
+        initial_alerts=[
+            "dns_resolution_timeout",
+            "intermittent_5xx_errors",
+            "cache_poisoning_detected",
+        ],
+        initial_log_snippet=(
+            "frontend-app[1234]: ERROR: getaddrinfo EAI_AGAIN api.example.com\n"
+            "dns-resolver-us[5678]: WARN: Stale entry for api.example.com (TTL exceeded by 3600s)\n"
+            "api-gateway[9012]: ERROR: Unable to resolve auth-service.internal\n"
+            "dns-resolver-eu[3456]: INFO: Serving stale entry for api.example.com\n"
+            "frontend-app[7890]: WARN: Fallback DNS also failing"
+        ),
+        root_cause="DNS cache poisoning with stale entries causing intermittent resolution failures",
+        correct_diagnostic_tools=["dig", "nslookup", "tcpdump", "systemctl"],
+        correct_remediation_sequence=[
+            {"action_type": "diagnose", "target": "dns-resolver-us", "tool_used": "dig"},
+            {"action_type": "check_connectivity", "target": "api-gateway", "tool_used": "nslookup"},
+            {"action_type": "analyze_root_cause", "target": "dns-resolver-us", "tool_used": "tcpdump"},
+            {"action_type": "remediate", "target": "dns-resolver-us", "tool_used": "systemctl", "parameters": {"action": "flush_cache"}},
+            {"action_type": "remediate", "target": "dns-resolver-eu", "tool_used": "systemctl", "parameters": {"action": "flush_cache"}},
+            {"action_type": "check_metrics", "target": "frontend-app", "tool_used": "curl"},
+        ],
+        available_tools=[
+            "dig", "nslookup", "tcpdump", "systemctl", "journalctl",
+            "ping", "curl", "netstat", "ss",
+        ],
+        max_steps=12,
+        hints=[
+            "DNS issues often cause intermittent failures.",
+            "Check both regional DNS resolvers.",
+            "Flush DNS caches after identifying stale entries.",
+        ],
+        initial_service_health={
+            "frontend-app": "degraded",
+            "api-gateway": "degraded",
+            "dns-resolver-us": "degraded",
+            "dns-resolver-eu": "degraded",
+        },
+        service_health_after_remediation={
+            "frontend-app": "healthy",
+            "api-gateway": "healthy",
+            "dns-resolver-us": "healthy",
+            "dns-resolver-eu": "healthy",
+        },
+    ),
+    "circuit_breaker_storm": TaskConfig(
+        name="circuit_breaker_storm",
+        difficulty="expert",
+        incident_title="Cascading Microservice Circuit Breaker Storm",
+        severity="P1",
+        affected_services=[
+            "inventory-service", "order-service", "payment-service",
+            "notification-service", "slow-legacy-api",
+        ],
+        initial_alerts=[
+            "circuit_breaker_open",
+            "cascade_failure_detected",
+            "high_error_rate",
+            "thread_pool_exhaustion",
+            "timeout_cascade",
+        ],
+        initial_log_snippet=(
+            "inventory-service[1234]: ERROR: Circuit breaker OPEN for slow-legacy-api\n"
+            "order-service[5678]: ERROR: Fallback failed, circuit breaker OPEN\n"
+            "payment-service[9012]: ERROR: Timeout waiting for inventory-service\n"
+            "notification-service[3456]: WARN: Thread pool saturated (500/500 active)\n"
+            "slow-legacy-api[7890]: CRITICAL: Response time p99=45s (SLA=2s)\n"
+            "hystrix: ALERT: Multiple services tripping circuit breakers simultaneously"
+        ),
+        root_cause="slow-legacy-api bottleneck causing cascading circuit breaker failures across microservices",
+        correct_diagnostic_tools=["prometheus", "hystrix_dashboard", "thread_dump", "tcpdump"],
+        correct_remediation_sequence=[
+            {"action_type": "check_metrics", "target": "slow-legacy-api", "tool_used": "prometheus"},
+            {"action_type": "diagnose", "target": "inventory-service", "tool_used": "hystrix_dashboard"},
+            {"action_type": "query_logs", "target": "slow-legacy-api", "tool_used": "thread_dump"},
+            {"action_type": "analyze_root_cause", "target": "slow-legacy-api", "tool_used": "tcpdump"},
+            {"action_type": "remediate", "target": "slow-legacy-api", "tool_used": "kubectl", "parameters": {"action": "apply_backpressure"}},
+            {"action_type": "remediate", "target": "inventory-service", "tool_used": "kubectl", "parameters": {"action": "increase_timeout"}},
+            {"action_type": "remediate", "target": "order-service", "tool_used": "kubectl", "parameters": {"action": "reset_circuit_breaker"}},
+            {"action_type": "scale_up", "target": "slow-legacy-api", "tool_used": "kubectl"},
+            {"action_type": "check_metrics", "target": "payment-service", "tool_used": "prometheus"},
+        ],
+        available_tools=[
+            "prometheus", "hystrix_dashboard", "thread_dump", "tcpdump",
+            "kubectl", "curl", "netstat", "jstack", "lsof",
+        ],
+        max_steps=25,
+        hints=[
+            "Multiple circuit breakers opening simultaneously indicates a common bottleneck.",
+            "Identify the slowest downstream dependency first.",
+            "Apply backpressure before resetting circuit breakers.",
+            "Scale the bottleneck service after applying fixes.",
+            "Verify all services recover before completing.",
+        ],
+        initial_service_health={
+            "inventory-service": "down",
+            "order-service": "down",
+            "payment-service": "degraded",
+            "notification-service": "degraded",
+            "slow-legacy-api": "degraded",
+        },
+        service_health_after_remediation={
+            "inventory-service": "healthy",
+            "order-service": "healthy",
+            "payment-service": "healthy",
+            "notification-service": "healthy",
+            "slow-legacy-api": "healthy",
+        },
+    ),
 }
 
 
@@ -380,22 +598,45 @@ def compute_reward(
     # Time penalty every step
     reward += REWARD_TABLE["time_penalty_per_step"]
 
+    # Validate action_type
     action_type = action.action_type.lower()
+    if action_type not in [t.lower() for t in VALID_ACTION_TYPES]:
+        reward += REWARD_TABLE["wasted_step"]
+        return _clamp_reward(reward), f"Invalid action type: {action.action_type}"
     target = action.target.lower()
     tool = action.tool_used.lower()
 
     # --- Correct tool selection for diagnosis ---
-    if action_type in ("diagnose", "check_metrics", "check_connectivity", "query_logs"):
+    diagnostic_actions = ("diagnose", "check_metrics", "check_connectivity", "query_logs")
+    if action_type in diagnostic_actions:
+        state.diagnostic_count += 1
         if tool in [t.lower() for t in task.correct_diagnostic_tools]:
             reward += REWARD_TABLE["correct_tool_selection"]
             result_parts.append(f"Correct diagnostic tool '{tool}' selected")
+            # Award correct_diagnostic_sequence for multiple correct diagnostics
+            if state.diagnostic_count >= 2 and not state.diagnostic_sequence_rewarded:
+                state.diagnostic_sequence_rewarded = True
+                reward += REWARD_TABLE["correct_diagnostic_sequence"]
+                result_parts.append("Correct diagnostic sequence")
         elif tool:
             reward += REWARD_TABLE["wasted_step"]
             result_parts.append(f"Suboptimal tool '{tool}' for diagnosis")
 
+    # --- Severity classification (implicit from correct prioritization) ---
+    if action_type == "diagnose" and not state.severity_classified:
+        # Award for correctly identifying severity through prioritization
+        if target in [s.lower() for s in task.affected_services[:1]]:
+            state.severity_classified = True
+            reward += REWARD_TABLE["correct_severity_classification"]
+            result_parts.append("Severity correctly classified through prioritization")
+
     # --- Root cause identification ---
     if action_type == "analyze_root_cause" and not state.root_cause_identified:
-        if target in [s.lower() for s in task.affected_services]:
+        # Require at least 1 diagnostic before root cause analysis
+        if state.diagnostic_count < 1:
+            reward += REWARD_TABLE["wasted_step"]
+            result_parts.append("Insufficient diagnostics before root cause analysis")
+        elif target in [s.lower() for s in task.affected_services]:
             state.root_cause_identified = True
             reward += REWARD_TABLE["correct_root_cause_identification"]
             result_parts.append("Root cause correctly identified")
@@ -416,15 +657,10 @@ def compute_reward(
                 matched = True
                 break
         if matched:
-            reward += REWARD_TABLE["successful_remediation"] * 0.5
+            reward += REWARD_TABLE["successful_remediation"]
             result_parts.append(f"Valid remediation on '{target}'")
             if target in state.service_health:
                 state.service_health[target] = "healthy"
-            # Cascading recovery: fix all services that depend on this root cause
-            for svc in state.service_health:
-                if state.service_health[svc] != "healthy":
-                    state.service_health[svc] = "healthy"
-                    result_parts.append(f"Cascading recovery: '{svc}' restored")
         else:
             reward += REWARD_TABLE["wasted_step"]
             result_parts.append(f"Remediation on '{target}' not in expected sequence")
@@ -448,31 +684,35 @@ def compute_reward(
     # --- Scale up ---
     if action_type == "scale_up":
         if target in [s.lower() for s in task.affected_services]:
-            reward += REWARD_TABLE["successful_remediation"] * 0.3
+            reward += REWARD_TABLE["successful_remediation"]
             result_parts.append(f"Scale-up initiated for '{target}'")
             if target in state.service_health:
                 state.service_health[target] = "healthy"
-            # Cascading recovery
-            for svc in state.service_health:
-                if state.service_health[svc] != "healthy":
-                    state.service_health[svc] = "healthy"
-                    result_parts.append(f"Cascading recovery: '{svc}' restored")
         else:
             reward += REWARD_TABLE["wasted_step"]
             result_parts.append(f"Scale-up target '{target}' not applicable")
 
     # --- Escalate ---
     if action_type == "escalate":
-        if task.severity in ("P2", "P1"):
+        if task.severity == "P3":
+            # P3 is low priority - escalation is unnecessary
             reward += REWARD_TABLE["unnecessary_escalation"]
-            result_parts.append("Unnecessary escalation — agent should attempt remediation first")
+            result_parts.append("Unnecessary escalation for P3 — agent should attempt remediation first")
+        elif task.severity == "P1":
+            # P1 is critical - escalation is appropriate
+            result_parts.append("Appropriate escalation for critical P1 incident")
         else:
-            reward += REWARD_TABLE["failed_critical_escalation"]
-            result_parts.append("Failed to escalate critical incident")
+            # P2 - neutral, wasted step but not heavily penalized
+            reward += REWARD_TABLE["wasted_step"]
+            result_parts.append("Escalation for P2 - consider remediation first")
 
     # --- Rollback ---
     if action_type == "rollback":
-        if task.severity == "P1" and "postgres" in target:
+        # Validate rollback target is in affected services
+        if target not in [s.lower() for s in task.affected_services]:
+            reward += REWARD_TABLE["wasted_step"]
+            result_parts.append(f"Cannot rollback '{target}': not in affected services")
+        elif task.severity == "P1" and "postgres" in target:
             reward += REWARD_TABLE["destructive_action_penalty"]
             result_parts.append(
                 "DANGEROUS: Rollback on database during P1 — potential data loss"
@@ -481,8 +721,9 @@ def compute_reward(
             reward += REWARD_TABLE["partial_resolution"]
             result_parts.append(f"Rollback on '{target}'")
 
-    # --- Verification step ---
+    # --- Verification step (mutually exclusive with correct_tool_selection) ---
     if action_type == "check_metrics" and state.root_cause_identified:
+        # Only give verification reward, not tool selection reward
         reward += REWARD_TABLE["verification_step"]
         result_parts.append("Verification step after root cause identification")
 
@@ -490,8 +731,10 @@ def compute_reward(
     if task.severity == "P1" and action_type in (
         "check_connectivity", "diagnose", "analyze_root_cause", "check_metrics"
     ):
-        reward += REWARD_TABLE["safe_action_on_p1"]
-        result_parts.append("Safe diagnostic action on P1 incident")
+        # Only award if correct diagnostic tool is used
+        if tool in [t.lower() for t in task.correct_diagnostic_tools]:
+            reward += REWARD_TABLE["safe_action_on_p1"]
+            result_parts.append("Safe diagnostic action on P1 incident")
 
     # --- Check if all services are healthy ---
     all_healthy = all(
@@ -504,7 +747,7 @@ def compute_reward(
         result_parts.append("All services restored to healthy state")
 
     result_str = "; ".join(result_parts) if result_parts else "No significant outcome"
-    return _clamp_reward(max(0.0, reward)), result_str
+    return _clamp_reward(reward), result_str
 
 
 # ---------------------------------------------------------------------------
@@ -535,18 +778,19 @@ def grade_episode(
     if root_cause_identified:
         score += 0.25
 
-    # Correct tool usage (20%)
+    # Correct tool usage (20%) - use Jaccard similarity
     correct_tools = set(t.lower() for t in task.correct_diagnostic_tools)
+    diagnostic_actions = ("diagnose", "check_metrics", "check_connectivity", "query_logs")
     tools_used = set(
         a.tool_used.lower()
         for a in action_history
-        if a.tool_used and a.action_type.lower() in (
-            "diagnose", "check_metrics", "check_connectivity", "query_logs",
-        )
+        if a.tool_used and a.action_type.lower() in diagnostic_actions
     )
-    if correct_tools:
-        tool_accuracy = len(tools_used & correct_tools) / len(correct_tools)
-        score += 0.20 * tool_accuracy
+    if correct_tools or tools_used:
+        union = correct_tools | tools_used
+        if union:
+            jaccard = len(correct_tools & tools_used) / len(union)
+            score += 0.20 * jaccard
 
     # Remediation success (30%)
     all_healthy = all(v == "healthy" for v in service_health.values()) if service_health else False
@@ -563,19 +807,30 @@ def grade_episode(
         efficiency = max(0.0, 1.0 - (steps_taken / max_steps))
         score += 0.15 * efficiency
 
-    # Action quality — penalize destructive actions (deducted from total)
+    # Severity awareness (10%) - NEW
+    if task.severity == "P1":
+        # P1: should check_connectivity first, avoid destructive actions
+        action_types_used = [a.action_type.lower() for a in action_history]
+        if "check_connectivity" in action_types_used[:3]:
+            score += 0.05
+        if not any(a.action_type == "restart_service" and "postgres" in a.target for a in action_history):
+            score += 0.05
+    elif task.severity == "P3":
+        # P3: should be quick, direct remediation
+        if steps_taken <= 4:
+            score += 0.10
+
+    # Action quality — penalize destructive actions (capped at -0.30 total)
     destructive_count = 0
     for a in action_history:
         if a.action_type.lower() in ("rollback", "restart_service"):
             if "postgres" in a.target.lower() and task.severity == "P1":
                 destructive_count += 1
-    score -= 0.10 * destructive_count
-
-    # Unnecessary escalations
     escalation_count = sum(
         1 for a in action_history if a.action_type.lower() == "escalate"
     )
-    score -= 0.05 * escalation_count
+    penalty = 0.10 * destructive_count + 0.05 * escalation_count
+    score -= min(penalty, 0.30)  # Cap total penalties at -0.30
 
     return _clamp_reward(score)
 
@@ -598,6 +853,10 @@ class IncidentEnvState:
     action_history: List[ResilienceOpsAction] = field(default_factory=list)
     cumulative_reward: float = 0.0
     done: bool = False
+    # Tracking for reward logic
+    diagnostic_count: int = 0
+    diagnostic_sequence_rewarded: bool = False
+    severity_classified: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +939,7 @@ class ResilienceOpsEnvironment(Environment):
         )
 
     def _build_observation(self, previous_action_result: str) -> ResilienceOpsObservation:
+        import random
         task = self._state.task
         if task is None:
             return ResilienceOpsObservation(
@@ -689,12 +949,48 @@ class ResilienceOpsEnvironment(Environment):
 
         steps_remaining = max(0, task.max_steps - self._state.step_count)
 
+        # Dynamic alerts based on service health (EC-10)
+        dynamic_alerts = []
+        for service, health in self._state.service_health.items():
+            if health == "healthy":
+                dynamic_alerts.append(f"RESOLVED: {service} is healthy")
+            elif health == "degraded":
+                dynamic_alerts.append(f"WARNING: {service} is degraded")
+            elif health == "down":
+                dynamic_alerts.append(f"CRITICAL: {service} is DOWN")
+
+        # Add original alerts for services not yet resolved
+        for alert in task.initial_alerts:
+            # Extract service name from alert (simple heuristic)
+            alert_lower = alert.lower()
+            matching_service = None
+            for svc in task.affected_services:
+                if svc.lower().replace("-", "_") in alert_lower or svc.lower().replace("-", "") in alert_lower:
+                    matching_service = svc
+                    break
+            if matching_service and self._state.service_health.get(matching_service) != "healthy":
+                dynamic_alerts.append(alert)
+
+        # Stochastic elements for grading diversity (EC-16)
+        rng = random.Random(self._state.episode_id)  # Deterministic per episode
+        alert_order = dynamic_alerts.copy()
+        rng.shuffle(alert_order)
+
+        # Maybe add red herring alerts for P3/P2 tasks
+        red_herrings = [
+            "Monitoring: cpu_usage_spike on monitoring-server",
+            "NOTICE: scheduled_maintenance window started",
+            "INFO: backup_job completed successfully",
+        ]
+        if task.severity in ("P2", "P3") and rng.random() < 0.3:
+            alert_order.insert(rng.randint(0, len(alert_order)), rng.choice(red_herrings))
+
         return ResilienceOpsObservation(
             incident_id=self._state.episode_id[:8],
             incident_title=task.incident_title,
             severity=task.severity,
             affected_services=list(task.affected_services),
-            alert_signals=list(task.initial_alerts),
+            alert_signals=alert_order if alert_order else list(task.initial_alerts),
             log_snippet=task.initial_log_snippet,
             available_tools=list(task.available_tools),
             steps_remaining=steps_remaining,
