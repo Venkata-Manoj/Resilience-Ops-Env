@@ -24,13 +24,11 @@ RUN apt-get update && \
 ARG BUILD_MODE=in-repo
 ARG ENV_NAME=resilience_ops_env
 
-# Copy dependency files first for better layer caching
-COPY pyproject.toml requirements.txt /app/env/
-COPY uv.lock /app/env/uv.lock
-
-# Copy environment code
+# Copy environment code (always at root of build context)
 COPY . /app/env
 
+# For in-repo builds, openenv is already vendored in the build context
+# For standalone builds, openenv will be installed via pyproject.toml
 WORKDIR /app/env
 
 # Ensure uv is available (for local builds where base image lacks it)
@@ -61,17 +59,11 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
-# Create non-root user for security (skip if UID 1000 already exists, as on HF Spaces)
-RUN id -u 1000 >/dev/null 2>&1 || useradd -m -s /bin/bash -u 1000 appuser
-
 # Copy the virtual environment from builder
 COPY --from=builder /app/env/.venv /app/.venv
 
 # Copy the environment code
 COPY --from=builder /app/env /app/env
-
-# Set ownership (use numeric UID to work regardless of username)
-RUN chown -R 1000:1000 /app
 
 # Set PATH to use the virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
@@ -81,9 +73,6 @@ ENV PYTHONPATH="/app/env:$PYTHONPATH"
 
 # Enable web interface
 ENV ENABLE_WEB_INTERFACE=true
-
-# Switch to non-root user
-USER 1000
 
 # Expose the application port
 EXPOSE 8000
