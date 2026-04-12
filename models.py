@@ -598,7 +598,8 @@ REWARD_TABLE: Dict[str, float] = {
 
 
 def _clamp_reward(value: float) -> float:
-    return max(0.0, min(1.0, value))
+    """Clamp to strict (0, 1) — evaluator rejects exactly 0.0 and 1.0."""
+    return max(0.01, min(0.99, value))
 
 
 def compute_reward(
@@ -1034,7 +1035,7 @@ class ResilienceOpsEnvironment(Environment):
     def get_final_grade(self) -> float:
         """Return the final graded score for the episode (0.0–1.0)."""
         if self._state.task is None:
-            return 0.0
+            return 0.01
         return grade_episode(
             task=self._state.task,
             action_history=self._state.action_history,
