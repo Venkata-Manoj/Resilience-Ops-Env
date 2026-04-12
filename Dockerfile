@@ -61,8 +61,8 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
-# Create non-root user for security
-RUN useradd -m -s /bin/bash -u 1000 appuser
+# Create non-root user for security (skip if UID 1000 already exists, as on HF Spaces)
+RUN id -u 1000 >/dev/null 2>&1 || useradd -m -s /bin/bash -u 1000 appuser
 
 # Copy the virtual environment from builder
 COPY --from=builder /app/env/.venv /app/.venv
@@ -70,8 +70,8 @@ COPY --from=builder /app/env/.venv /app/.venv
 # Copy the environment code
 COPY --from=builder /app/env /app/env
 
-# Set ownership
-RUN chown -R appuser:appuser /app
+# Set ownership (use numeric UID to work regardless of username)
+RUN chown -R 1000:1000 /app
 
 # Set PATH to use the virtual environment
 ENV PATH="/app/.venv/bin:$PATH"
@@ -83,7 +83,7 @@ ENV PYTHONPATH="/app/env:$PYTHONPATH"
 ENV ENABLE_WEB_INTERFACE=true
 
 # Switch to non-root user
-USER appuser
+USER 1000
 
 # Expose the application port
 EXPOSE 8000
