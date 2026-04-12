@@ -13,10 +13,6 @@ venv/
 ENV/
 env/
 
-# Node
-node_modules/
-.opencode/
-
 # IDE
 .vscode/
 .idea/
@@ -49,19 +45,16 @@ V3_0_IMPLEMENTATION_SUMMARY.md
 qwen_analysis_v2.md
 evaluation.txt
 QUALIFICATION_SUMMARY.md
+CONTRIBUTING.md
 
-# Validation / testing (not needed at runtime)
+# Validation (not needed at runtime)
 validate.py
-tests/
 
 # Agent configurations
 .codex/
 .agents/
 .opencode/
 
-# Docker (recursive prevention)
-Dockerfile
-.dockerignore
-
-# Large files not needed at runtime
-uv.lock
+# Testing
+.pytest_cache/
+tests/

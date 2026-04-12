@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import random
 import copy
+from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -1046,3 +1048,474 @@ class ResilienceOpsEnvironment(Environment):
         """Switch the active task difficulty."""
         if task_name in TASKS:
             self._task_name = task_name
+
+
+# ---------------------------------------------------------------------------
+# v3.0 Features — Dynamic Environments + Multi-Agent + Observability
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DynamicTaskConfig(TaskConfig):
+    """Tasks with randomized parameters for grading diversity."""
+
+    alert_noise: float = 0.2  # Probability of false-positive alerts
+    log_corruption: float = 0.1  # Probability of truncated/garbled logs
+    service_health_noise: float = 0.1  # Probability of flapping health status
+    red_herring_services: List[str] = field(default_factory=list)
+    time_pressure_multiplier: float = 1.0  # 0.5x = lenient, 2.0x = aggressive
+
+    def generate_episode(self, seed: int) -> "EpisodeInstance":
+        """Generate a unique episode instance from this template."""
+        rng = random.Random(seed)
+        alerts = self._randomize_alerts(rng)
+        logs = self._randomize_logs(rng)
+        health = self._randomize_health(rng)
+        return EpisodeInstance(alerts=alerts, logs=logs, health=health)
+
+    def _randomize_alerts(self, rng: random.Random) -> List[str]:
+        """Randomize alert order and add noise."""
+        alerts = list(self.initial_alerts)
+        rng.shuffle(alerts)
+        if rng.random() < self.alert_noise:
+            false_positives = [
+                "NOTICE: Backup completed successfully",
+                "INFO: Scheduled maintenance started",
+                "DEBUG: Cache refresh triggered",
+            ]
+            alerts.insert(rng.randint(0, len(alerts)), rng.choice(false_positives))
+        return alerts
+
+    def _randomize_logs(self, rng: random.Random) -> str:
+        """Randomize log snippets with potential corruption."""
+        logs = self.initial_log_snippet
+        if rng.random() < self.log_corruption:
+            lines = logs.split("\n")
+            if len(lines) > 2 and rng.random() < 0.5:
+                lines = lines[:-1]
+            if rng.random() < 0.5:
+                lines.insert(rng.randint(0, len(lines)), "[CORRUPTED LOG ENTRY]")
+            logs = "\n".join(lines)
+        return logs
+
+    def _randomize_health(self, rng: random.Random) -> Dict[str, str]:
+        """Randomize initial service health with potential flapping."""
+        health = dict(self.initial_service_health)
+        if rng.random() < self.service_health_noise:
+            services = list(health.keys())
+            if services:
+                svc = rng.choice(services)
+                states = ["healthy", "degraded", "down"]
+                health[svc] = rng.choice(states)
+        return health
+
+
+@dataclass
+class EpisodeInstance:
+    """A specific instance of a task with randomized parameters."""
+
+    alerts: List[str]
+    logs: str
+    health: Dict[str, str]
+
+
+# ---------------------------------------------------------------------------
+# Multi-Agent Support
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SharedIncidentState:
+    """Shared state visible to all agents in a multi-agent session."""
+
+    service_health: Dict[str, str] = field(default_factory=dict)
+    global_alerts: List[str] = field(default_factory=list)
+    root_cause_identified: bool = False
+    all_services_restored: bool = False
+    agent_actions: Dict[str, List[ResilienceOpsAction]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+
+
+class MultiAgentEnvironment(ResilienceOpsEnvironment):
+    """Multiple agents collaborate on a single incident."""
+
+    SUPPORTS_CONCURRENT_SESSIONS: bool = True
+
+    def __init__(self, num_agents: int = 2, task_name: str = "easy"):
+        super().__init__(task_name=task_name)
+        self.num_agents = num_agents
+        self.agents: Dict[str, IncidentEnvState] = {}
+        self.shared_incident: SharedIncidentState = SharedIncidentState()
+        self._agent_ids: List[str] = [f"agent_{i}" for i in range(num_agents)]
+
+    def reset(self) -> Dict[str, ResilienceOpsObservation]:
+        """Reset environment for all agents."""
+        task = TASKS.get(self._task_name)
+        if task is None:
+            return {}
+        self.shared_incident = SharedIncidentState(
+            service_health=dict(task.initial_service_health),
+            global_alerts=list(task.initial_alerts),
+        )
+        observations = {}
+        for agent_id in self._agent_ids:
+            self.agents[agent_id] = IncidentEnvState(
+                episode_id=str(agent_id),
+                task=task,
+                step_count=0,
+                root_cause_identified=False,
+                all_services_restored=False,
+                service_health=dict(task.initial_service_health),
+                action_history=[],
+                cumulative_reward=0.0,
+                done=False,
+            )
+            obs = self._build_observation_for_agent(
+                agent_id, "Environment reset. New incident received."
+            )
+            observations[agent_id] = obs
+        return observations
+
+    def multi_agent_step(
+        self, agent_id: str, action: ResilienceOpsAction
+    ) -> ResilienceOpsObservation:
+        """Execute action from one agent, affecting shared state visible to all."""
+        if agent_id not in self.agents:
+            raise ValueError(f"Unknown agent_id: {agent_id}")
+        state = self.agents[agent_id]
+        task = state.task
+        if task is None:
+            return ResilienceOpsObservation(
+                previous_action_result="No active incident.", done=True
+            )
+        if state.done:
+            return ResilienceOpsObservation(
+                previous_action_result="Episode finished.", done=True
+            )
+        state.step_count += 1
+        state.action_history.append(action)
+        self.shared_incident.agent_actions[agent_id].append(action)
+        reward_delta, result_desc = compute_reward(action, task, state)
+        state.cumulative_reward += reward_delta
+        for svc, health in state.service_health.items():
+            if health == "healthy":
+                self.shared_incident.service_health[svc] = health
+        if state.root_cause_identified:
+            self.shared_incident.root_cause_identified = True
+        all_healthy = all(
+            v == "healthy" for v in self.shared_incident.service_health.values()
+        )
+        if all_healthy:
+            self.shared_incident.all_services_restored = True
+            state.all_services_restored = True
+            state.done = True
+        elif state.step_count >= task.max_steps:
+            state.done = True
+        return self._build_observation_for_agent(agent_id, result_desc)
+
+    def _build_observation_for_agent(
+        self, agent_id: str, previous_action_result: str
+    ) -> ResilienceOpsObservation:
+        """Build observation for a specific agent with shared state."""
+        state = self.agents.get(agent_id)
+        task = state.task if state else None
+        if task is None:
+            return ResilienceOpsObservation(
+                previous_action_result=previous_action_result, done=True
+            )
+        steps_remaining = max(0, task.max_steps - state.step_count)
+        return ResilienceOpsObservation(
+            incident_id=state.episode_id,
+            incident_title=task.incident_title,
+            severity=task.severity,
+            affected_services=list(task.affected_services),
+            alert_signals=self.shared_incident.global_alerts,
+            log_snippet=task.initial_log_snippet,
+            available_tools=list(task.available_tools),
+            steps_remaining=steps_remaining,
+            step_count=state.step_count,
+            previous_action_result=previous_action_result,
+            service_health=dict(self.shared_incident.service_health),
+            task_name=task.name,
+            root_cause_identified=self.shared_incident.root_cause_identified,
+            hints=list(task.hints),
+            done=state.done,
+            reward=state.cumulative_reward,
+        )
+
+    def get_agent_grades(self) -> Dict[str, float]:
+        """Get final grades for all agents."""
+        grades = {}
+        for agent_id, state in self.agents.items():
+            task = state.task
+            if task is None:
+                grades[agent_id] = 0.0
+                continue
+            grade = grade_episode(
+                task=task,
+                action_history=state.action_history,
+                service_health=self.shared_incident.service_health,
+                root_cause_identified=self.shared_incident.root_cause_identified,
+                steps_taken=state.step_count,
+                max_steps=task.max_steps,
+            )
+            grades[agent_id] = grade
+        return grades
+
+
+# ---------------------------------------------------------------------------
+# Observability Dashboard
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AgentMetrics:
+    """Prometheus-compatible metrics for agent behavior analysis."""
+
+    episodes_completed: int = 0
+    episodes_failed: int = 0
+    total_rewards: List[float] = field(default_factory=list)
+    mean_reward_per_step: List[float] = field(default_factory=list)
+    action_type_counts: Dict[str, int] = field(
+        default_factory=lambda: defaultdict(int)
+    )
+    root_cause_identification_count: int = 0
+    total_episodes: int = 0
+    time_to_resolution: List[int] = field(default_factory=list)
+    destructive_action_count: int = 0
+    escalation_count: int = 0
+
+    def record_episode(
+        self,
+        task_name: str,
+        rewards: List[float],
+        action_history: List[ResilienceOpsAction],
+        root_cause_identified: bool,
+        steps_taken: int,
+        success: bool,
+    ) -> None:
+        """Record metrics for a completed episode."""
+        self.total_episodes += 1
+        if success:
+            self.episodes_completed += 1
+        else:
+            self.episodes_failed += 1
+        if rewards:
+            self.total_rewards.append(sum(rewards))
+            self.mean_reward_per_step.append(sum(rewards) / len(rewards))
+        for action in action_history:
+            self.action_type_counts[action.action_type] += 1
+        if root_cause_identified:
+            self.root_cause_identification_count += 1
+        if success:
+            self.time_to_resolution.append(steps_taken)
+        for action in action_history:
+            if action.action_type in ("rollback", "restart_service") and "postgres" in action.target.lower():
+                self.destructive_action_count += 1
+            if action.action_type == "escalate":
+                self.escalation_count += 1
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Get a summary of all metrics."""
+        import statistics
+
+        summary: Dict[str, Any] = {
+            "episodes_completed": self.episodes_completed,
+            "episodes_failed": self.episodes_failed,
+            "root_cause_identification_rate": (
+                self.root_cause_identification_count / self.total_episodes
+                if self.total_episodes > 0
+                else 0.0
+            ),
+            "action_type_distribution": dict(self.action_type_counts),
+            "destructive_action_rate": (
+                self.destructive_action_count / sum(self.action_type_counts.values())
+                if self.action_type_counts
+                else 0.0
+            ),
+            "escalation_rate": (
+                self.escalation_count / sum(self.action_type_counts.values())
+                if self.action_type_counts
+                else 0.0
+            ),
+        }
+        if self.total_rewards:
+            summary["mean_total_reward"] = statistics.mean(self.total_rewards)
+            summary["std_total_reward"] = (
+                statistics.stdev(self.total_rewards)
+                if len(self.total_rewards) > 1
+                else 0.0
+            )
+        if self.mean_reward_per_step:
+            summary["mean_reward_per_step"] = statistics.mean(self.mean_reward_per_step)
+        if self.time_to_resolution:
+            summary["mean_time_to_resolution"] = statistics.mean(self.time_to_resolution)
+            summary["median_time_to_resolution"] = statistics.median(self.time_to_resolution)
+        return summary
+
+    def to_prometheus_format(self) -> str:
+        """Export metrics in Prometheus exposition format."""
+        lines = []
+        lines.append("# HELP resilience_ops_episodes_total Total number of episodes")
+        lines.append("# TYPE resilience_ops_episodes_total counter")
+        lines.append(
+            f'resilience_ops_episodes_total{{status="completed"}} {self.episodes_completed}'
+        )
+        lines.append(
+            f'resilience_ops_episodes_total{{status="failed"}} {self.episodes_failed}'
+        )
+        lines.append(
+            "# HELP resilience_ops_root_cause_identified_total Total root cause identifications"
+        )
+        lines.append("# TYPE resilience_ops_root_cause_identified_total counter")
+        lines.append(
+            f"resilience_ops_root_cause_identified_total {self.root_cause_identification_count}"
+        )
+        lines.append("# HELP resilience_ops_action_total Total actions by type")
+        lines.append("# TYPE resilience_ops_action_total counter")
+        for action_type, count in self.action_type_counts.items():
+            lines.append(f'resilience_ops_action_total{{type="{action_type}"}} {count}')
+        lines.append("# HELP resilience_ops_time_to_resolution Steps to resolution")
+        lines.append("# TYPE resilience_ops_time_to_resolution histogram")
+        for ttr in self.time_to_resolution:
+            lines.append(
+                f'resilience_ops_time_to_resolution_bucket{{le="{ttr}"}} 1'
+            )
+        return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# LLM-as-Judge Grading
+# ---------------------------------------------------------------------------
+
+class LLMJudgeGrader:
+    """Supplement rule-based grading with LLM evaluation of reasoning quality."""
+
+    def __init__(self, model_name: str = "gpt-4"):
+        self.model_name = model_name
+
+    def grade_reasoning(
+        self,
+        action_history: List[ResilienceOpsAction],
+        task: TaskConfig,
+    ) -> float:
+        """Evaluate whether the agent's diagnostic reasoning was sound."""
+        action_summary = self._format_actions(action_history)
+        prompt = (
+            f"Evaluate this SRE agent's incident response reasoning:\n\n"
+            f"Incident: {task.incident_title} (Severity: {task.severity})\n"
+            f"Root Cause: {task.root_cause}\n"
+            f"Affected Services: {', '.join(task.affected_services)}\n\n"
+            f"Agent Actions:\n{action_summary}\n\n"
+            f"Score the reasoning quality from 0.0 to 1.0 based on:\n"
+            f"1. Did the agent follow a logical diagnostic sequence? (0.25)\n"
+            f"2. Did the agent prioritize correctly given the severity? (0.25)\n"
+            f"3. Did the agent avoid destructive actions? (0.25)\n"
+            f"4. Was the remediation sequence appropriate? (0.25)\n\n"
+            f"Respond with ONLY a float between 0.0 and 1.0."
+        )
+        try:
+            return self._call_judge_model(prompt)
+        except Exception:
+            return 0.5
+
+    def _format_actions(self, action_history: List[ResilienceOpsAction]) -> str:
+        """Format action history for the judge prompt."""
+        lines = []
+        for i, action in enumerate(action_history, 1):
+            lines.append(
+                f"  {i}. {action.action_type}(target={action.target}, tool={action.tool_used})"
+            )
+        return "\n".join(lines) if lines else "  (no actions taken)"
+
+    def _call_judge_model(self, prompt: str) -> float:
+        """Call the LLM judge model."""
+        import re
+        try:
+            import os
+            from openai import OpenAI
+
+            api_key = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+            base_url = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+            client = OpenAI(api_key=api_key, base_url=base_url)
+
+            response = client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert SRE evaluator. Score reasoning quality objectively.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=10,
+            )
+            content = response.choices[0].message.content.strip()
+            match = re.search(r"(\d+\.?\d*)", content)
+            if match:
+                score = float(match.group(1))
+                return max(0.0, min(1.0, score))
+            return 0.5
+        except Exception:
+            return 0.5
+
+    def combined_grade(
+        self,
+        rule_based_score: float,
+        action_history: List[ResilienceOpsAction],
+        task: TaskConfig,
+        reasoning_weight: float = 0.3,
+    ) -> float:
+        """Combine rule-based score with LLM reasoning evaluation."""
+        reasoning_score = self.grade_reasoning(action_history, task)
+        combined = (1 - reasoning_weight) * rule_based_score + reasoning_weight * reasoning_score
+        return _clamp_reward(combined)
+
+
+# ---------------------------------------------------------------------------
+# TRL / GRPO Training Integration
+# ---------------------------------------------------------------------------
+
+class ResilienceOpsGRPORewardModel:
+    """Reward model compatible with TRL's GRPOTrainer."""
+
+    def __init__(self, env: ResilienceOpsEnvironment):
+        self.env = env
+
+    def compute_rewards(
+        self, prompts: List[str], completions: List[str]
+    ) -> List[float]:
+        """Given (prompt, completion) pairs, return rewards by executing completions."""
+        rewards = []
+        for prompt, completion in zip(prompts, completions):
+            try:
+                action = self._parse_completion_to_action(completion)
+                obs = self.env.step(action)
+                if obs.done:
+                    reward = self.env.get_final_grade()
+                else:
+                    reward = obs.reward
+                rewards.append(reward)
+            except Exception:
+                rewards.append(0.0)
+        return rewards
+
+    def _parse_completion_to_action(self, completion: str) -> ResilienceOpsAction:
+        """Parse a text completion into a ResilienceOpsAction."""
+        import json
+
+        try:
+            data = json.loads(completion)
+            return ResilienceOpsAction(
+                action_type=data.get("action_type", "diagnose"),
+                target=data.get("target", ""),
+                tool_used=data.get("tool_used", ""),
+                parameters=data.get("parameters", {}),
+            )
+        except json.JSONDecodeError:
+            return ResilienceOpsAction(
+                action_type="diagnose",
+                target="",
+                tool_used="",
+                parameters={},
+            )
+

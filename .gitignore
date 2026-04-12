@@ -82,6 +82,9 @@ V3_0_IMPLEMENTATION_SUMMARY.md
 qwen_analysis_v2.md
 evaluation.txt
 QUALIFICATION_SUMMARY.md
+CONTRIBUTING.md
+validate.py
+tests/
 
 # Agent/tool configurations
 .codex/

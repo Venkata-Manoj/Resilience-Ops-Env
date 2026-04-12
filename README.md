@@ -479,21 +479,16 @@ resilience_ops_env/
 |-- Dockerfile                      # Multi-stage production Docker config
 |-- README.md                       # This file
 |-- LICENSE                         # BSD 3-Clause License
-|-- CONTRIBUTING.md                 # Contribution guidelines
 |-- openenv.yaml                    # OpenEnv manifest
 |-- pyproject.toml                  # Python project configuration
 |-- requirements.txt                # Pinned dependencies
-|-- models.py                       # Core: types, tasks, reward, grader
+|-- models.py                       # Core: types, tasks, reward, grader, v3.0 features
 |-- client.py                       # WebSocket environment client
 |-- inference.py                    # Baseline LLM inference script
-|-- v3_0_features.py                # v3.0: dynamic tasks, multi-agent, metrics
-|-- validate.py                     # Pre-submission validation (13 checks)
 |-- server/
 |   |-- __init__.py
 |   |-- app.py                      # FastAPI application
 |   +-- resilience_ops_env_environment.py
-+-- tests/
-    +-- test_models.py              # 33 unit tests
 ```
 
 ---

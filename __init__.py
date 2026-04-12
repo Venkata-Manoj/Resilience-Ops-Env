@@ -7,10 +7,12 @@
 """Resilience Ops Env Environment."""
 
 from .client import ResilienceOpsEnv
-from .models import ResilienceOpsAction, ResilienceOpsObservation, ResilienceOpsEnvironment, TASKS
-
-# v3.0 Advanced Features (optional import — these extend the base environment)
-from .v3_0_features import (
+from .models import (
+    ResilienceOpsAction,
+    ResilienceOpsObservation,
+    ResilienceOpsEnvironment,
+    TASKS,
+    # v3.0 Advanced Features
     DynamicTaskConfig,
     EpisodeInstance,
     MultiAgentEnvironment,
