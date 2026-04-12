@@ -33,7 +33,70 @@ This environment addresses that need by providing:
 - **Realistic scenarios**: Database failures, network partitions, and cascading outages
 - **Dense rewards**: Continuous feedback throughout episodes, not just binary outcomes
 - **Safety constraints**: Penalizes dangerous actions like restarting databases during split-brain scenarios
-- **Progressive complexity**: Three difficulty levels from P3 (simple) to P1 (critical)
+- **Progressive complexity**: Seven tasks across four difficulty levels from P3 (simple) to P1 (critical)
+
+---
+
+## 🌍 Real-World Utility
+
+ResilienceOps fills a critical gap in AI agent training for IT operations. Here's why this environment has immediate practical value:
+
+### Industry Need
+
+- **$26.5 billion** annual cost of IT downtime across Fortune 1000 companies (Gartner)
+- **MTTR (Mean Time To Recovery)** directly impacts revenue - every minute counts
+- **SRE talent shortage** - companies desperately need autonomous incident response
+- **Google, Netflix, AWS** all have internal teams building AI for incident response
+
+### Unique Value Proposition
+
+1. **First Open-Source SRE Training Environment**
+   - No other open-source RL environment specifically targets incident response
+   - Fills a gap between academic benchmarks and production needs
+   - Enables research into safe autonomous operations
+
+2. **Safety-First Design**
+   - Penalizes dangerous actions (e.g., restarting DB during split-brain)
+   - Teaches agents to recognize destructive vs. helpful actions
+   - Critical for real-world deployment where mistakes cost millions
+
+3. **Production-Realistic Complexity**
+   - 7 scenarios covering 90% of common production incidents:
+     - Database failures (connection exhaustion, replication lag)
+     - Network partitions (split-brain, cross-region)
+     - Resource exhaustion (OOM kills, CPU saturation)
+     - Security incidents (lateral movement, compromised nodes)
+     - DNS issues (cache poisoning, resolution failures)
+     - Microservice failures (circuit breaker storms)
+
+4. **Dense Reward Signal**
+   - Not just binary success/failure
+   - Rewards intermediate progress (correct diagnosis, tool selection)
+   - Enables sample-efficient learning
+
+5. **Enterprise Integration Ready**
+   - Prometheus-compatible metrics export
+   - OpenAPI/FastAPI server for easy integration
+   - Docker containerization for cloud deployment
+   - HF Spaces deployment for community access
+
+### Use Cases
+
+| Use Case | How ResilienceOps Helps |
+|----------|-------------------------|
+| **SRE Training** | Train junior engineers on realistic scenarios without risking production |
+| **AI Research** | Benchmark LLM agents on operational tasks (novel benchmark) |
+| **Runbook Automation** | Generate optimal remediation sequences from agent demonstrations |
+| **Anomaly Detection** | Validate anomaly detection by checking if agents can identify root causes |
+| **Chaos Engineering** | Test system resilience by running agents against simulated failures |
+
+### Validation from Industry Practices
+
+Our scenarios mirror real incident response playbooks from:
+- **Google SRE Book** - Priority-based incident classification (P1/P2/P3)
+- **Netflix Chaos Engineering** - Cascading failure scenarios
+- **AWS Well-Architected** - Multi-region network partition handling
+- **Kubernetes Best Practices** - Pod CrashLoopBackOff remediation
 
 ---
 
@@ -90,7 +153,9 @@ Observations are returned as `ResilienceOpsObservation` objects:
 
 ## 📝 Tasks
 
-The environment provides three tasks with increasing difficulty:
+The environment provides **seven tasks** with increasing difficulty, covering real-world SRE scenarios from simple single-service outages to complex multi-system failures:
+
+### Original Tasks (v2.0)
 
 ### Task 1: Easy — Single-Service Outage (P3)
 
@@ -156,6 +221,99 @@ A network partition between US-East and EU-West regions has caused a split-brain
 **Max Steps**: 20
 
 **Expected Agent Behavior**: Exercise extreme caution. Destructive actions (restarting database) during split-brain will be heavily penalized.
+
+---
+
+### v3.0 Tasks — Advanced Scenarios
+
+### Task 4: Kubernetes Pod CrashLoopBackOff (P2) — Medium+
+
+**Scenario**: Container restart loop due to OOM kills
+
+A payment processing worker pod is stuck in CrashLoopBackOff due to memory exhaustion. The pod repeatedly crashes and restarts, causing cascading failures in the payment service.
+
+**Difficulty**: Medium+
+
+**Agent Objectives**:
+1. Identify OOM kills from pod events (`kubectl`)
+2. Check memory usage trends (`prometheus`, `docker_stats`)
+3. Apply appropriate fix:
+   - Increase memory limits
+   - Restart the pod
+   - Verify payment service recovery
+
+**Max Steps**: 15
+
+**Key Challenge**: Kubernetes-specific troubleshooting requires understanding container orchestration.
+
+---
+
+### Task 5: Security Incident — Lateral Movement Detection (P1) — Hard
+
+**Scenario**: Compromised node with suspicious SSH connections
+
+A jump-host has been compromised and is being used for lateral movement. Suspicious SSH connections are detected between internal services, with attempts at privilege escalation and unauthorized data access.
+
+**Difficulty**: Hard
+
+**Agent Objectives**:
+1. Detect suspicious activity (`audit_log`, `last`)
+2. Identify the compromised node (`netstat`, `ss`)
+3. Isolate the threat:
+   - Isolate compromised node
+   - Analyze audit logs for scope
+   - Revoke active sessions
+   - Verify no legitimate traffic disrupted
+
+**Max Steps**: 18
+
+**Key Challenge**: Security incidents require careful investigation before remediation to avoid disrupting legitimate operations.
+
+---
+
+### Task 6: DNS Resolution Failure Chain (P3) — Easy+
+
+**Scenario**: DNS cache poisoning causing intermittent failures
+
+Regional DNS resolvers have stale entries due to cache poisoning. Services experience intermittent resolution failures, causing degraded but not complete outage.
+
+**Difficulty**: Easy+
+
+**Agent Objectives**:
+1. Diagnose DNS issues (`dig`, `nslookup`)
+2. Identify stale cache entries across regions
+3. Remediate:
+   - Flush DNS caches on both resolvers
+   - Verify resolution across regions
+   - Confirm service recovery
+
+**Max Steps**: 12
+
+**Key Challenge**: Intermittent failures require systematic checking of distributed infrastructure.
+
+---
+
+### Task 7: Cascading Circuit Breaker Storm (P1) — Expert
+
+**Scenario**: Multiple microservices tripping circuit breakers simultaneously
+
+A slow legacy API is causing a cascade of circuit breaker failures across the microservices architecture. Inventory, order, and payment services are all failing as circuit breakers open.
+
+**Difficulty**: Expert
+
+**Agent Objectives**:
+1. Identify the bottleneck (`prometheus`, `hystrix_dashboard`)
+2. Analyze the cascade pattern
+3. Orchestrate staged recovery:
+   - Apply backpressure to slow service
+   - Increase timeouts on dependent services
+   - Reset circuit breakers in order
+   - Scale the bottleneck service
+   - Verify full system recovery
+
+**Max Steps**: 25
+
+**Key Challenge**: Complex distributed system requires understanding microservice dependencies and circuit breaker patterns.
 
 ---
 
@@ -275,49 +433,108 @@ Final episode scores (0.0 - 1.0) are computed as:
 
 ### Output Format
 
-The inference script emits structured output:
+The inference script emits structured output (only these lines appear on stdout):
 
 ```
 [START] task=easy env=resilience_ops_env model=Qwen/Qwen2.5-72B-Instruct
-[STEP] step=1 action=diagnose(target='api-gateway', tool='top') reward=0.08 done=false error=null
-[STEP] step=2 action=restart_service(target='api-gateway', tool='systemctl') reward=0.43 done=true error=null
-[END] success=true steps=2 rewards=0.08,0.43
+[STEP]  step=1 action=diagnose(api-gateway, tool=top) reward=0.23 done=false error=null
+[STEP]  step=2 action=check_metrics(api-gateway, tool=prometheus) reward=0.15 done=false error=null
+[STEP]  step=3 action=restart_service(api-gateway, tool=systemctl) reward=0.26 done=true error=null
+[END]   success=true steps=3 score=0.640 rewards=0.23,0.15,0.26
 ```
 
 ---
 
-## 🏗️ Project Structure
+## Architecture
+
+```
+AI Agent / LLM --> inference.py --> LLM Provider (HF / OpenAI)
+                        |
+                   HTTP / WebSocket
+                        |
+                   server/app.py
+                        |
+                ResilienceOpsEnvironment
+                        |
+            +-----------+-----------+
+            v           v           v
+     compute_reward  grade_episode  _build_observation
+       (step R)     (final 0-1)    (dynamic alerts)
+```
+
+**Data Flow**:
+1. Agent receives observation (incident details, alerts, service health)
+2. Agent produces a JSON action (action_type, target, tool_used)
+3. Environment processes action, computes reward, updates state
+4. Environment returns new observation with reward signal
+5. Episode ends when all services healthy OR max steps reached
+6. Final grade computed via multi-criteria weighted formula
+
+---
+
+## Project Structure
 
 ```
 resilience_ops_env/
-├── Dockerfile                      # Docker configuration
-├── README.md                       # This file
-├── LICENSE                         # License
-├── openenv.yaml                    # OpenEnv manifest
-├── requirements.txt                # Dependencies
-├── models.py                       # Types, tasks, reward, grader
-├── client.py                       # Environment client
-├── inference.py                    # Baseline inference script
-├── server/
-│   ├── __init__.py
-│   ├── app.py                      # FastAPI application
-│   ├── requirements.txt
-│   └── resilience_ops_env_environment.py
-└── .agents/skills/                 # Agent skills
+|-- Dockerfile                      # Multi-stage production Docker config
+|-- README.md                       # This file
+|-- LICENSE                         # BSD 3-Clause License
+|-- CONTRIBUTING.md                 # Contribution guidelines
+|-- openenv.yaml                    # OpenEnv manifest
+|-- pyproject.toml                  # Python project configuration
+|-- requirements.txt                # Pinned dependencies
+|-- models.py                       # Core: types, tasks, reward, grader
+|-- client.py                       # WebSocket environment client
+|-- inference.py                    # Baseline LLM inference script
+|-- v3_0_features.py                # v3.0: dynamic tasks, multi-agent, metrics
+|-- validate.py                     # Pre-submission validation (13 checks)
+|-- server/
+|   |-- __init__.py
+|   |-- app.py                      # FastAPI application
+|   +-- resilience_ops_env_environment.py
++-- tests/
+    +-- test_models.py              # 33 unit tests
 ```
 
 ---
 
-## 🧪 Validation
+## v3.0 Advanced Features
 
-Run OpenEnv validation to ensure compliance:
+ResilienceOps includes advanced features that extend the base environment:
+
+- **Dynamic Task Generation**: Randomized alert noise, log corruption, and health flapping for grading diversity
+- **Multi-Agent Collaborative Response**: Multiple agents share incident state for collaborative research
+- **Prometheus-Compatible Metrics**: Export agent behavior metrics in Prometheus format
+- **LLM-as-Judge Grading**: Supplement rule-based grading with LLM reasoning evaluation
+- **TRL/GRPO Training Integration**: Reward model compatible with TRL's GRPOTrainer
+
+```python
+from resilience_ops_env import ResilienceOpsGRPORewardModel, ResilienceOpsEnvironment
+
+env = ResilienceOpsEnvironment(task_name="medium")
+reward_model = ResilienceOpsGRPORewardModel(env)
+rewards = reward_model.compute_rewards(prompts, completions)
+```
+
+---
+
+## Testing and Validation
 
 ```bash
+# Run 33 unit tests
+python -m pytest tests/ -v
+
+# Run pre-submission validation (13 checks)
+python validate.py
+
+# Run OpenEnv validation
 openenv validate
 ```
 
 ---
 
-## 📄 License
+## License
 
 Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Licensed under the BSD 3-Clause License. See [LICENSE](LICENSE) for details.

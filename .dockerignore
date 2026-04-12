@@ -1,0 +1,67 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# Node
+node_modules/
+.opencode/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+
+# Environment / secrets
+.env
+.env.example
+.env.local
+
+# Internal development artifacts
+ANALYSIS_LINE_MAPPING.md
+IMPLEMENTATION_PLAN.md
+IMPLEMENTATION_SUMMARY.md
+V3_0_IMPLEMENTATION_SUMMARY.md
+qwen_analysis_v2.md
+evaluation.txt
+QUALIFICATION_SUMMARY.md
+
+# Validation / testing (not needed at runtime)
+validate.py
+tests/
+
+# Agent configurations
+.codex/
+.agents/
+.opencode/
+
+# Docker (recursive prevention)
+Dockerfile
+.dockerignore
+
+# Large files not needed at runtime
+uv.lock

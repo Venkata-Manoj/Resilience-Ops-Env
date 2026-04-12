@@ -14,6 +14,7 @@ issues) under time pressure and resource constraints.
 
 from __future__ import annotations
 
+import random
 import copy
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,7 +22,7 @@ from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import Action, Observation, State
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +48,7 @@ class ResilienceOpsAction(Action):
 
     action_type: str = Field(
         ...,
+        max_length=128,
         description=(
             "Type of action to take. One of: "
             "diagnose, remediate, escalate, query_logs, check_metrics, "
@@ -55,16 +57,30 @@ class ResilienceOpsAction(Action):
     )
     target: str = Field(
         default="",
+        max_length=256,
         description="Service/component to act on (e.g. 'api-gateway', 'postgres-primary')",
     )
     tool_used: str = Field(
         default="",
+        max_length=256,
         description="Specific diagnostic or remediation tool (e.g. 'top', 'pg_isready', 'kubectl')",
     )
     parameters: Dict[str, Any] = Field(
         default_factory=dict,
         description="Action-specific parameters as key-value pairs",
     )
+
+    @field_validator("parameters")
+    @classmethod
+    def validate_parameters(cls, v: Dict[str, Any]) -> Dict[str, Any]:
+        """Sanitize parameters to prevent injection and DoS."""
+        if len(v) > 10:
+            raise ValueError("parameters dict must have at most 10 keys")
+        sanitized = {}
+        for key, val in v.items():
+            k = str(key)[:64]
+            sanitized[k] = str(val)[:256] if val is not None else ""
+        return sanitized
 
 
 # ---------------------------------------------------------------------------
@@ -723,7 +739,8 @@ def compute_reward(
 
     # --- Verification step (mutually exclusive with correct_tool_selection) ---
     if action_type == "check_metrics" and state.root_cause_identified:
-        # Only give verification reward, not tool selection reward
+        # Only give verification reward — do NOT also give tool selection
+        # (tool selection was already conditionally awarded above)
         reward += REWARD_TABLE["verification_step"]
         result_parts.append("Verification step after root cause identification")
 
@@ -814,6 +831,15 @@ def grade_episode(
         if "check_connectivity" in action_types_used[:3]:
             score += 0.05
         if not any(a.action_type == "restart_service" and "postgres" in a.target for a in action_history):
+            score += 0.05
+    elif task.severity == "P2":
+        # P2: should identify root cause before remediation
+        if root_cause_identified:
+            score += 0.05
+        # Reward for systematic diagnosis (at least 2 diagnostic actions)
+        diag_actions = [a for a in action_history if a.action_type.lower() in
+                       ("diagnose", "check_metrics", "check_connectivity", "query_logs")]
+        if len(diag_actions) >= 2:
             score += 0.05
     elif task.severity == "P3":
         # P3: should be quick, direct remediation
@@ -939,7 +965,6 @@ class ResilienceOpsEnvironment(Environment):
         )
 
     def _build_observation(self, previous_action_result: str) -> ResilienceOpsObservation:
-        import random
         task = self._state.task
         if task is None:
             return ResilienceOpsObservation(
@@ -997,7 +1022,7 @@ class ResilienceOpsEnvironment(Environment):
             step_count=self._state.step_count,
             previous_action_result=previous_action_result,
             service_health=dict(self._state.service_health),
-            task_name=task.difficulty,
+            task_name=task.name,
             root_cause_identified=self._state.root_cause_identified,
             hints=list(task.hints),
             done=self._state.done,

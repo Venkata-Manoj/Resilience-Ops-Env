@@ -17,7 +17,6 @@ venv/
 ENV/
 env/
 .venv
-.env/
 
 # IDE
 .vscode/
@@ -26,7 +25,7 @@ env/
 *.swo
 *~
 
-# Environment files
+# Environment files (NEVER commit secrets)
 .env
 .env.local
 .env.*.local
@@ -47,8 +46,6 @@ coverage.xml
 *.log
 logs/
 
-# Docker
-.dockerignore
 
 # OS
 .DS_Store
@@ -76,3 +73,17 @@ yarn-error.log*
 *.seed
 *.state
 .episodes/
+
+# Internal development artifacts — DO NOT PUSH
+ANALYSIS_LINE_MAPPING.md
+IMPLEMENTATION_PLAN.md
+IMPLEMENTATION_SUMMARY.md
+V3_0_IMPLEMENTATION_SUMMARY.md
+qwen_analysis_v2.md
+evaluation.txt
+QUALIFICATION_SUMMARY.md
+
+# Agent/tool configurations
+.codex/
+.opencode/
+.agents/
